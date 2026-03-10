@@ -61,6 +61,8 @@ class RealtimeCapabilities:
     auto_tool_reply_generation: bool
     audio_output: bool
     manual_function_calls: bool
+    tool_choice: bool = True
+    """Whether the model supports tool_choice in update_options (e.g. Google Realtime API does not)."""
 
 
 class RealtimeError(Exception):

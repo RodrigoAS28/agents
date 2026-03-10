@@ -388,7 +388,10 @@ class AgentActivity(RecognitionHooks):
             self._tool_choice = tool_choice
 
         if self._rt_session is not None:
-            self._rt_session.update_options(tool_choice=self._tool_choice)
+            tc = self._tool_choice
+            if isinstance(self.llm, llm.RealtimeModel) and not self.llm.capabilities.tool_choice:
+                tc = NOT_GIVEN
+            self._rt_session.update_options(tool_choice=tc)
 
         if utils.is_given(turn_detection):
             turn_detection = self._validate_turn_detection(turn_detection)
@@ -2332,7 +2335,10 @@ class AgentActivity(RecognitionHooks):
             self._session._conversation_item_added(msg)
 
         ori_tool_choice = self._tool_choice
-        if utils.is_given(model_settings.tool_choice):
+        if utils.is_given(model_settings.tool_choice) and (
+            not isinstance(self.llm, llm.RealtimeModel)
+            or self.llm.capabilities.tool_choice
+        ):
             self._rt_session.update_options(
                 tool_choice=cast(llm.ToolChoice, model_settings.tool_choice)
             )
@@ -2350,10 +2356,12 @@ class AgentActivity(RecognitionHooks):
                 instructions=instructions,
             )
         finally:
-            # reset tool_choice value
+            # reset tool_choice value (only for models that support it)
             if (
                 utils.is_given(model_settings.tool_choice)
                 and model_settings.tool_choice != ori_tool_choice
+                and isinstance(self.llm, llm.RealtimeModel)
+                and self.llm.capabilities.tool_choice
             ):
                 self._rt_session.update_options(tool_choice=ori_tool_choice)
 

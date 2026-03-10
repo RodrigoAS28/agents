@@ -283,6 +283,7 @@ class RealtimeModel(llm.RealtimeModel):
                 auto_tool_reply_generation=True,
                 audio_output=types.Modality.AUDIO in modalities,
                 manual_function_calls=False,
+                tool_choice=False,  # Google Realtime API does not support tool_choice
             )
         )
 
@@ -539,7 +540,9 @@ class RealtimeSession(llm.RealtimeSession):
             # no need to restart
 
         if is_given(tool_choice):
-            logger.warning("tool_choice is not supported by the Google Realtime API.")
+            logger.debug(
+                "tool_choice is not supported by the Google Realtime API, ignoring."
+            )
 
         if should_restart:
             self._mark_restart_needed()
