@@ -26,6 +26,7 @@ from livekit.plugins import (
     elevenlabs,
     google,
     groq,
+    hamsa,
     hume,
     inworld,
     lmnt,
@@ -255,6 +256,17 @@ PLUGIN = os.getenv("PLUGIN", "").strip()
 if PLUGIN:
     SYNTHESIZE_TTS = [p for p in SYNTHESIZE_TTS if p.id.startswith(PLUGIN)]  # type: ignore
 
+if os.getenv("HAMSA_API_KEY") and (not PLUGIN or "hamsa".startswith(PLUGIN)):
+    SYNTHESIZE_TTS.append(
+        pytest.param(
+            lambda: {
+                "tts": hamsa.TTS(speaker="Amjad", dialect="pls", language_id="ar"),
+                "proxy-upstream": "api.tryhamsa.com:443",
+            },
+            id="hamsa",
+        )
+    )
+
 
 async def _do_synthesis(tts_v: tts.TTS, segment: str, *, conn_options: APIConnectOptions):
     tts_stream = tts_v.synthesize(text=segment, conn_options=conn_options)
@@ -469,6 +481,17 @@ STREAM_TTS = [
 PLUGIN = os.getenv("PLUGIN", "").strip()
 if PLUGIN:
     STREAM_TTS = [p for p in STREAM_TTS if p.id.startswith(PLUGIN)]  # type: ignore
+
+if os.getenv("HAMSA_API_KEY") and (not PLUGIN or "hamsa".startswith(PLUGIN)):
+    STREAM_TTS.append(
+        pytest.param(
+            lambda: {
+                "tts": hamsa.TTS(speaker="Amjad", dialect="pls", language_id="ar"),
+                "proxy-upstream": "api.tryhamsa.com:443",
+            },
+            id="hamsa",
+        )
+    )
 
 
 async def _do_stream(tts_v: tts.TTS, segments: list[str], *, conn_options: APIConnectOptions):
