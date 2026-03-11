@@ -462,7 +462,7 @@ class AgentActivity(RecognitionHooks):
 
         return task
 
-    async def start(self) -> None:
+    async def start(self, rt_session: llm.RealtimeSession | None = None) -> None:
         # `start` must only be called by AgentSession
 
         async with self._lock:
@@ -487,7 +487,7 @@ class AgentActivity(RecognitionHooks):
                         self.tts.prewarm()
 
                 # don't use start_span for _start_session, avoid nested user/assistant turns
-                await self._start_session()
+                await self._start_session(rt_session=rt_session)
                 self._started = True
 
                 @tracer.start_as_current_span(
@@ -511,7 +511,7 @@ class AgentActivity(RecognitionHooks):
             finally:
                 start_span.end()
 
-    async def _start_session(self) -> None:
+    async def _start_session(self, rt_session: llm.RealtimeSession | None = None) -> None:
         assert self._lock.locked(), "_start_session should only be used when locked."
 
         if isinstance(self.llm, llm.LLM):
@@ -558,7 +558,11 @@ class AgentActivity(RecognitionHooks):
             self._mcp_tools = tools
 
         if isinstance(self.llm, llm.RealtimeModel):
-            self._rt_session = self.llm.session()
+            if rt_session is not None:
+                self._rt_session = rt_session
+            else:
+                self._rt_session = self.llm.session()
+
             self._rt_session.on("generation_created", self._on_generation_created)
             self._rt_session.on("input_speech_started", self._on_input_speech_started)
             self._rt_session.on("input_speech_stopped", self._on_input_speech_stopped)
@@ -571,16 +575,21 @@ class AgentActivity(RecognitionHooks):
 
             remove_instructions(self._agent._chat_ctx)
 
-            try:
-                await self._rt_session.update_instructions(self._agent.instructions)
-            except llm.RealtimeError:
-                logger.exception("failed to update the instructions")
+            if rt_session is None:
+                try:
+                    await self._rt_session.update_instructions(self._agent.instructions)
+                except llm.RealtimeError:
+                    logger.exception("failed to update the instructions")
 
             try:
                 await self._rt_session.update_chat_ctx(self._agent.chat_ctx)
             except llm.RealtimeError:
                 logger.exception("failed to update the chat_ctx")
 
+            # Always call update_tools -- it diffs internally:
+            # - Fresh session: sends all tools
+            # - Pre-warmed, no MCP: tools match, no-op, no reconnect
+            # - Pre-warmed, with MCP: MCP tools added, reconnect (unavoidable)
             try:
                 await self._rt_session.update_tools(llm.ToolContext(self.tools).flatten())
             except llm.RealtimeError:
@@ -2336,8 +2345,7 @@ class AgentActivity(RecognitionHooks):
 
         ori_tool_choice = self._tool_choice
         if utils.is_given(model_settings.tool_choice) and (
-            not isinstance(self.llm, llm.RealtimeModel)
-            or self.llm.capabilities.tool_choice
+            not isinstance(self.llm, llm.RealtimeModel) or self.llm.capabilities.tool_choice
         ):
             self._rt_session.update_options(
                 tool_choice=cast(llm.ToolChoice, model_settings.tool_choice)

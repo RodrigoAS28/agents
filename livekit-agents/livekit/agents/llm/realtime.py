@@ -94,6 +94,26 @@ class RealtimeModel:
     @abstractmethod
     def session(self) -> RealtimeSession: ...
 
+    async def prewarm_session(
+        self,
+        *,
+        instructions: str | None = None,
+        tools: list[Tool] | None = None,
+    ) -> RealtimeSession:
+        """Create a session pre-configured with instructions and tools.
+
+        Default implementation creates a session and configures it via
+        update_instructions/update_tools. Providers can override for
+        zero-reconnect optimization (e.g., baking config into the initial
+        WebSocket connect).
+        """
+        sess = self.session()
+        if instructions is not None:
+            await sess.update_instructions(instructions)
+        if tools is not None:
+            await sess.update_tools(tools)
+        return sess
+
     @abstractmethod
     async def aclose(self) -> None: ...
 

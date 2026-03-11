@@ -26,7 +26,7 @@ from livekit import rtc
 from .. import cli, inference, llm, stt, tts, utils, vad
 from .._exceptions import APIError
 from ..job import JobContext, get_job_context
-from ..llm import AgentHandoff, ChatContext, Instructions, MetricsReport
+from ..llm import AgentHandoff, ChatContext, Instructions, MetricsReport, RealtimeSession
 from ..log import logger
 from ..telemetry import trace_types, tracer
 from ..types import (
@@ -421,6 +421,10 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
 
         # ivr activity
         self._ivr_activity: IVRActivity | None = None
+
+        # pre-warmed realtime sessions for faster agent handoffs
+        # keyed by id(agent) to enforce same-instance matching
+        self._prewarmed_sessions: dict[int, tuple[Agent, RealtimeSession]] = {}
 
     def emit(self, event: EventTypes, arg: AgentEvent) -> None:
         self._recorded_events.append(arg)
@@ -890,6 +894,10 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
                 await activity.aclose()
             self._activity = None
 
+            for _, rt_session in self._prewarmed_sessions.values():
+                await rt_session.aclose()
+            self._prewarmed_sessions.clear()
+
             if self._agent_speaking_span:
                 self._agent_speaking_span.end()
                 self._agent_speaking_span = None
@@ -1116,6 +1124,36 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
             skip_reply=skip_reply,
         )
 
+    async def prewarm_agent(self, agent: Agent) -> None:
+        """Pre-create a realtime session for a future agent handoff.
+
+        The session connects in the background with the agent's instructions
+        and tools. When update_agent() is later called with the *same agent
+        instance*, the pre-warmed session is used, eliminating WebSocket
+        setup latency.
+
+        The same agent instance must be passed to both prewarm_agent() and
+        the handoff (tool return / update_agent). Different instances of
+        the same class will NOT match.
+        """
+        llm_model = agent.llm if is_given(agent.llm) else self._llm
+        if not isinstance(llm_model, llm.RealtimeModel):
+            return
+
+        all_tools = list(self._tools or []) + agent.tools
+        flat_tools = llm.ToolContext(all_tools).flatten()
+
+        instructions = str(agent.instructions) if agent.instructions is not None else None
+
+        rt_session = await llm_model.prewarm_session(instructions=instructions, tools=flat_tools)
+
+        old = self._prewarmed_sessions.pop(id(agent), None)
+        if old is not None:
+            await old[1].aclose()
+
+        self._prewarmed_sessions[id(agent)] = (agent, rt_session)
+        logger.debug("pre-warmed realtime session for agent %s", agent.id)
+
     def update_agent(self, agent: Agent) -> None:
         self._agent = agent
 
@@ -1197,7 +1235,20 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
             self._chat_ctx.insert(handoff_item)
 
             if new_activity == "start":
-                await self._activity.start()
+                prewarmed = self._prewarmed_sessions.pop(id(agent), None)
+                rt_session: RealtimeSession | None = None
+                if prewarmed is not None:
+                    _, rt_session = prewarmed
+                    if hasattr(rt_session, "_main_atask") and rt_session._main_atask.done():
+                        logger.warning(
+                            "pre-warmed session for agent %s is dead, falling back to fresh",
+                            agent.id,
+                        )
+                        await rt_session.aclose()
+                        rt_session = None
+                    else:
+                        logger.info("using pre-warmed realtime session for agent %s", agent.id)
+                await self._activity.start(rt_session=rt_session)
             elif new_activity == "resume":
                 await self._activity.resume()
 

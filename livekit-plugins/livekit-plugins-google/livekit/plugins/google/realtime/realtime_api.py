@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import json
 import os
 import time
@@ -384,6 +385,21 @@ class RealtimeModel(llm.RealtimeModel):
         self._sessions.add(sess)
         return sess
 
+    async def prewarm_session(
+        self,
+        *,
+        instructions: str | None = None,
+        tools: list[llm.Tool] | None = None,
+    ) -> RealtimeSession:
+        sess = self.session()
+        # _main_task is scheduled via create_task but hasn't yielded yet,
+        # so we can configure _opts and _tools before the initial connect
+        if instructions is not None:
+            sess._opts.instructions = instructions
+        if tools is not None:
+            sess._tools = llm.ToolContext(tools)
+        return sess
+
     def update_options(
         self,
         *,
@@ -427,7 +443,7 @@ class RealtimeModel(llm.RealtimeModel):
 class RealtimeSession(llm.RealtimeSession):
     def __init__(self, realtime_model: RealtimeModel) -> None:
         super().__init__(realtime_model)
-        self._opts = realtime_model._opts
+        self._opts = copy.deepcopy(realtime_model._opts)
         self._tools = llm.ToolContext.empty()
         self._chat_ctx = llm.ChatContext.empty()
         self._msg_ch = utils.aio.Chan[ClientEvents]()
@@ -540,9 +556,7 @@ class RealtimeSession(llm.RealtimeSession):
             # no need to restart
 
         if is_given(tool_choice):
-            logger.debug(
-                "tool_choice is not supported by the Google Realtime API, ignoring."
-            )
+            logger.debug("tool_choice is not supported by the Google Realtime API, ignoring.")
 
         if should_restart:
             self._mark_restart_needed()
