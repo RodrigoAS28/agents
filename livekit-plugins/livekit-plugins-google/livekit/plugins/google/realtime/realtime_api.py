@@ -998,7 +998,12 @@ class RealtimeSession(llm.RealtimeSession):
                             # 2) the generation is not started (interrupted -> turn_complete)
                             # for both cases, we interrupt the agent if there is no pending generation from `generate_reply`
                             # for the second case, the pending generation will be stopped by `turn_complete` event coming later
-                            if not self._pending_generation_fut:
+                            is_tool_call_transition = (
+                                self._current_generation is not None
+                                and self._current_generation._tool_calls_sent
+                                and not self._current_generation._done
+                            )
+                            if not self._pending_generation_fut and not is_tool_call_transition:
                                 self._handle_input_speech_started()
 
                             sc.interrupted = None
