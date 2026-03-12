@@ -1098,6 +1098,11 @@ class RealtimeSession(llm.RealtimeSession):
         return conf
 
     def _start_new_generation(self) -> None:
+        prev_had_tool_calls = (
+            self._current_generation is not None
+            and self._current_generation._tool_calls_sent
+        )
+
         if self._current_generation and not self._current_generation._done:
             if not self._current_generation._tool_calls_sent:
                 logger.warning("starting new generation while another is active. Finalizing previous.")
@@ -1140,9 +1145,7 @@ class RealtimeSession(llm.RealtimeSession):
             generation_event.user_initiated = True
             self._pending_generation_fut.set_result(generation_event)
             self._pending_generation_fut = None
-        else:
-            # emit input_speech_started event before starting an agent initiated generation
-            # to interrupt the previous audio playout if any
+        elif not prev_had_tool_calls:
             self._handle_input_speech_started()
 
         self.emit("generation_created", generation_event)
