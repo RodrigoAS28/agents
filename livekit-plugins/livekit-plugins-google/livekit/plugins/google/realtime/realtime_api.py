@@ -174,6 +174,10 @@ class _ResponseGeneration:
     """The timestamp when the generation is completed"""
     _done: bool = False
     """Whether the generation is done (set when the turn is complete)"""
+    _tool_calls_sent: bool = False
+    """Whether tool calls have been emitted (channels closed but audio may still be playing)"""
+    _channels_closed: bool = False
+    """Whether the generation channels have been closed"""
 
     def push_text(self, text: str) -> None:
         if self.output_text:
@@ -721,24 +725,6 @@ class RealtimeSession(llm.RealtimeSession):
             )
             self._in_user_activity = False
 
-        if skip_user_turn:
-            msgs = self._chat_ctx.messages()
-            last_user = next(
-                (m for m in reversed(msgs) if m.role == "user"), None
-            )
-            if last_user is None:
-                logger.warning(
-                    "generate_reply called with skip_user_turn=True but no user message "
-                    "found in chat context; falling back to injecting a placeholder user turn"
-                )
-                skip_user_turn = False
-            elif msgs and msgs[-1].role != "user":
-                logger.warning(
-                    "generate_reply called with skip_user_turn=True but the last message "
-                    "in chat context is not a user turn (role=%s); Gemini may not respond",
-                    msgs[-1].role,
-                )
-
         turns = []
         if is_given(instructions):
             turns.append(types.Content(parts=[types.Part(text=instructions)], role="model"))
@@ -746,6 +732,11 @@ class RealtimeSession(llm.RealtimeSession):
             # Gemini requires the last message to end with user's turn
             # so we add a placeholder user turn to trigger a new generation
             turns.append(types.Content(parts=[types.Part(text=".")], role="user"))
+        elif not turns:
+            logger.warning(
+                "generate_reply called with skip_user_turn=True but no instructions; "
+                "Gemini may not generate a response. Consider passing instructions."
+            )
         self._send_client_event(types.LiveClientContent(turns=turns, turn_complete=True))
 
         def _on_timeout() -> None:
@@ -1000,7 +991,7 @@ class RealtimeSession(llm.RealtimeSession):
                                     part["inline_data"] = "<audio>"
                         logger.debug("<<< received response", extra={"response": resp_copy})
 
-                    if not self._current_generation or self._current_generation._done:
+                    if not self._current_generation or self._current_generation._done or self._current_generation._tool_calls_sent:
                         if (sc := response.server_content) and sc.interrupted:
                             # two cases an interrupted event is sent without an active generation
                             # 1) the generation is done but playout is not finished (turn_complete -> interrupted)
@@ -1108,7 +1099,8 @@ class RealtimeSession(llm.RealtimeSession):
 
     def _start_new_generation(self) -> None:
         if self._current_generation and not self._current_generation._done:
-            logger.warning("starting new generation while another is active. Finalizing previous.")
+            if not self._current_generation._tool_calls_sent:
+                logger.warning("starting new generation while another is active. Finalizing previous.")
             self._mark_current_generation_done()
 
         response_id = utils.shortuuid("GR_")
@@ -1217,17 +1209,15 @@ class RealtimeSession(llm.RealtimeSession):
         if server_content.turn_complete:
             self._mark_current_generation_done()
 
-    def _mark_current_generation_done(self) -> None:
-        if not self._current_generation or self._current_generation._done:
+    def _close_generation_channels(self) -> None:
+        if not self._current_generation or self._current_generation._channels_closed:
             return
 
-        # emit input_speech_stopped event after the generation is done
+        gen = self._current_generation
+        gen._channels_closed = True
+
         self._handle_input_speech_stopped()
 
-        gen = self._current_generation
-
-        # The only way we'd know that the transcription is complete is by when they are
-        # done with generation
         if gen.input_transcription:
             self.emit(
                 "input_audio_transcription_completed",
@@ -1255,17 +1245,24 @@ class RealtimeSession(llm.RealtimeSession):
 
         if not gen.text_ch.closed:
             if self._opts.output_audio_transcription is None:
-                # close the text data of transcription synchronizer
                 gen.text_ch.send_nowait("")
             gen.text_ch.close()
         if not gen.audio_ch.closed:
             gen.audio_ch.close()
 
-        gen.function_ch.close()
-        gen.message_ch.close()
-        gen._done = True
+        if not gen.function_ch.closed:
+            gen.function_ch.close()
+        if not gen.message_ch.closed:
+            gen.message_ch.close()
+
+    def _mark_current_generation_done(self) -> None:
+        if not self._current_generation or self._current_generation._done:
+            return
+
+        self._close_generation_channels()
+        self._current_generation._done = True
         if lk_google_debug:
-            logger.debug(f"generation done {gen}")
+            logger.debug(f"generation done {self._current_generation}")
 
     def _handle_input_speech_started(self) -> None:
         self.emit("input_speech_started", llm.InputSpeechStartedEvent())
@@ -1292,7 +1289,8 @@ class RealtimeSession(llm.RealtimeSession):
                     arguments=arguments,
                 )
             )
-        self._mark_current_generation_done()
+        self._close_generation_channels()
+        gen._tool_calls_sent = True
 
     def _handle_tool_call_cancellation(
         self, tool_call_cancellation: types.LiveServerToolCallCancellation
