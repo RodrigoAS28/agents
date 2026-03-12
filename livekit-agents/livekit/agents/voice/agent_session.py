@@ -1019,6 +1019,7 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
         allow_interruptions: NotGivenOr[bool] = NOT_GIVEN,
         chat_ctx: NotGivenOr[ChatContext] = NOT_GIVEN,
         input_modality: Literal["text", "audio"] = "text",
+        skip_user_turn: bool = False,
     ) -> SpeechHandle:
         """Generate a reply for the agent to speak to the user.
 
@@ -1032,6 +1033,10 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
             chat_ctx (NotGivenOr[ChatContext], optional): The chat context to use for generating the reply.
                 Defaults to the chat context of the current agent if not provided.
             input_modality (Literal["text", "audio"], optional): The input mode to use for generating the reply.
+            skip_user_turn (bool, optional): If True, omit the dummy "." user turn when triggering
+                generation on the Google realtime model. Only effective when the accumulated session
+                context already contains user turns (e.g. after update_chat_ctx with history).
+                Defaults to False.
 
         Returns:
             SpeechHandle: A handle to the generated reply.
@@ -1064,6 +1069,7 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
                 allow_interruptions=allow_interruptions,
                 chat_ctx=chat_ctx,
                 input_details=InputDetails(modality=input_modality),
+                skip_user_turn=skip_user_turn,
             )
             if run_state:
                 run_state._watch_handle(handle)

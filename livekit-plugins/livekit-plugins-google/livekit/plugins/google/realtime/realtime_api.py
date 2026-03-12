@@ -699,7 +699,10 @@ class RealtimeSession(llm.RealtimeSession):
             self._msg_ch.send_nowait(event)
 
     def generate_reply(
-        self, *, instructions: NotGivenOr[str] = NOT_GIVEN
+        self,
+        *,
+        instructions: NotGivenOr[str] = NOT_GIVEN,
+        skip_user_turn: bool = False,
     ) -> asyncio.Future[llm.GenerationCreatedEvent]:
         if self._pending_generation_fut and not self._pending_generation_fut.done():
             logger.warning(
@@ -718,12 +721,18 @@ class RealtimeSession(llm.RealtimeSession):
             )
             self._in_user_activity = False
 
-        # Gemini requires the last message to end with user's turn
-        # so we need to add a placeholder user turn in order to trigger a new generation
         turns = []
         if is_given(instructions):
             turns.append(types.Content(parts=[types.Part(text=instructions)], role="model"))
-        turns.append(types.Content(parts=[types.Part(text=".")], role="user"))
+        if not skip_user_turn:
+            # Gemini requires the last message to end with user's turn
+            # so we add a placeholder user turn to trigger a new generation
+            turns.append(types.Content(parts=[types.Part(text=".")], role="user"))
+        elif not turns:
+            logger.warning(
+                "generate_reply called with skip_user_turn=True but no instructions; "
+                "Gemini may not generate a response. Consider passing instructions."
+            )
         self._send_client_event(types.LiveClientContent(turns=turns, turn_complete=True))
 
         def _on_timeout() -> None:

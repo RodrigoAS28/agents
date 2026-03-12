@@ -480,7 +480,10 @@ class RealtimeSession(
 
     @utils.log_exceptions(logger=logger)
     def generate_reply(
-        self, *, instructions: NotGivenOr[str] = NOT_GIVEN
+        self,
+        *,
+        instructions: NotGivenOr[str] = NOT_GIVEN,
+        skip_user_turn: bool = False,
     ) -> asyncio.Future[llm.GenerationCreatedEvent]:
         """Generate a reply from the LLM based on the instructions."""
         # Cancel prior pending generation if exists

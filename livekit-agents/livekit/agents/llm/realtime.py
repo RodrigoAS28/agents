@@ -200,6 +200,7 @@ class RealtimeSession(ABC, rtc.EventEmitter[EventTypes | TEvent], Generic[TEvent
         self,
         *,
         instructions: NotGivenOr[str] = NOT_GIVEN,
+        skip_user_turn: bool = False,
     ) -> asyncio.Future[GenerationCreatedEvent]: ...  # can raise RealtimeError on Timeout
 
     # commit the input audio buffer to the server

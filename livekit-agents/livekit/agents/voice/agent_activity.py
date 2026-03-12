@@ -894,6 +894,7 @@ class AgentActivity(RecognitionHooks):
         allow_interruptions: NotGivenOr[bool] = NOT_GIVEN,
         schedule_speech: bool = True,
         input_details: InputDetails = DEFAULT_INPUT_DETAILS,
+        skip_user_turn: bool = False,
     ) -> SpeechHandle:
         if (
             isinstance(self.llm, llm.RealtimeModel)
@@ -955,6 +956,7 @@ class AgentActivity(RecognitionHooks):
                     instructions=instructions or None,
                     # TODO(theomonnom): the list of tools should always be passed here
                     model_settings=ModelSettings(tool_choice=tool_choice),
+                    skip_user_turn=skip_user_turn,
                 ),
                 speech_handle=handle,
                 name="AgentActivity.realtime_reply",
@@ -2323,6 +2325,7 @@ class AgentActivity(RecognitionHooks):
         model_settings: ModelSettings,
         user_input: str | None = None,
         instructions: str | None = None,
+        skip_user_turn: bool = False,
     ) -> None:
         assert self._rt_session is not None, "rt_session is not available"
 
@@ -2353,7 +2356,8 @@ class AgentActivity(RecognitionHooks):
 
         try:
             generation_ev = await self._rt_session.generate_reply(
-                instructions=instructions or NOT_GIVEN
+                instructions=instructions or NOT_GIVEN,
+                skip_user_turn=skip_user_turn,
             )
 
             # _realtime_generation_task will clear the authorization

@@ -1853,6 +1853,7 @@ class RealtimeSession(  # noqa: F811
         self,
         *,
         instructions: NotGivenOr[str] = NOT_GIVEN,
+        skip_user_turn: bool = False,
     ) -> asyncio.Future[llm.GenerationCreatedEvent]:
         """Generate a reply from the model.
 

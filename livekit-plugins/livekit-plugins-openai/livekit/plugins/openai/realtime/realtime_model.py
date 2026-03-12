@@ -1316,7 +1316,10 @@ class RealtimeSession(
         self._pushed_duration_s = 0
 
     def generate_reply(
-        self, *, instructions: NotGivenOr[str] = NOT_GIVEN
+        self,
+        *,
+        instructions: NotGivenOr[str] = NOT_GIVEN,
+        skip_user_turn: bool = False,
     ) -> asyncio.Future[llm.GenerationCreatedEvent]:
         event_id = utils.shortuuid("response_create_")
         fut = asyncio.Future[llm.GenerationCreatedEvent]()

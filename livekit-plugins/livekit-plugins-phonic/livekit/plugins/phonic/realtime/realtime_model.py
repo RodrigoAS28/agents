@@ -375,7 +375,10 @@ class RealtimeSession(llm.RealtimeSession):
         logger.warning("push_video is not supported by the Phonic realtime model.")
 
     def generate_reply(
-        self, *, instructions: NotGivenOr[str] = NOT_GIVEN
+        self,
+        *,
+        instructions: NotGivenOr[str] = NOT_GIVEN,
+        skip_user_turn: bool = False,
     ) -> asyncio.Future[llm.GenerationCreatedEvent]:
         payload = GenerateReplyPayload(
             system_message=instructions if is_given(instructions) else None,
