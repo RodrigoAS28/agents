@@ -721,6 +721,24 @@ class RealtimeSession(llm.RealtimeSession):
             )
             self._in_user_activity = False
 
+        if skip_user_turn:
+            msgs = self._chat_ctx.messages()
+            last_user = next(
+                (m for m in reversed(msgs) if m.role == "user"), None
+            )
+            if last_user is None:
+                logger.warning(
+                    "generate_reply called with skip_user_turn=True but no user message "
+                    "found in chat context; falling back to injecting a placeholder user turn"
+                )
+                skip_user_turn = False
+            elif msgs and msgs[-1].role != "user":
+                logger.warning(
+                    "generate_reply called with skip_user_turn=True but the last message "
+                    "in chat context is not a user turn (role=%s); Gemini may not respond",
+                    msgs[-1].role,
+                )
+
         turns = []
         if is_given(instructions):
             turns.append(types.Content(parts=[types.Part(text=instructions)], role="model"))
@@ -728,11 +746,6 @@ class RealtimeSession(llm.RealtimeSession):
             # Gemini requires the last message to end with user's turn
             # so we add a placeholder user turn to trigger a new generation
             turns.append(types.Content(parts=[types.Part(text=".")], role="user"))
-        elif not turns:
-            logger.warning(
-                "generate_reply called with skip_user_turn=True but no instructions; "
-                "Gemini may not generate a response. Consider passing instructions."
-            )
         self._send_client_event(types.LiveClientContent(turns=turns, turn_complete=True))
 
         def _on_timeout() -> None:
