@@ -943,6 +943,8 @@ class RealtimeSession(llm.RealtimeSession):
                         self._tool_call_pending = False
                         self._tool_call_pending_logged = False
                 elif isinstance(msg, types.LiveClientRealtimeInput):
+                    # Yield so recv_task can set _tool_call_pending if a tool_call just arrived
+                    await asyncio.sleep(0)
                     if msg.media_chunks:
                         for media_chunk in msg.media_chunks:
                             if self._tool_call_pending:
@@ -1034,6 +1036,9 @@ class RealtimeSession(llm.RealtimeSession):
                     # Gate realtime input as soon as we see a tool_call to avoid 1008 (policy violation)
                     if response.tool_call:
                         self._tool_call_pending = True
+                        logger.info(
+                            "1008 workaround: tool_call received from server, gating realtime input"
+                        )
 
                     if not self._current_generation or self._current_generation._done:
                         if (sc := response.server_content) and sc.interrupted:
