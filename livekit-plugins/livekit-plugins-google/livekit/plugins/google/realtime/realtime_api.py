@@ -510,6 +510,7 @@ class RealtimeSession(llm.RealtimeSession):
         # See: https://discuss.ai.google.dev/t/gemini-live-api-websocket-error-1008-operation-is-not-implemented-or-supported-or-enabled/114644/56
         self._tool_call_pending = False
         self._tool_call_pending_logged = False
+        self._first_connection = True
 
     async def _close_active_session(self) -> None:
         async with self._session_lock:
@@ -854,6 +855,9 @@ class RealtimeSession(llm.RealtimeSession):
                                 turns=turns,  # type: ignore
                                 turn_complete=False,
                             )
+                    if not self._first_connection:
+                        self.emit("session_reconnected", llm.RealtimeSessionReconnectedEvent())
+                    self._first_connection = False
                     # queue up existing chat context
                     send_task = asyncio.create_task(
                         self._send_task(session), name="gemini-realtime-send"
@@ -958,6 +962,7 @@ class RealtimeSession(llm.RealtimeSession):
                                         "skipping realtime input (media) due to tool_call_pending (1008 workaround)"
                                     )
                                 break
+                            await asyncio.sleep(0)
                             await session.send_realtime_input(media=media_chunk)
                     elif msg.activity_start:
                         if self._tool_call_pending:
@@ -971,6 +976,7 @@ class RealtimeSession(llm.RealtimeSession):
                                     "skipping realtime input (activity_start) due to tool_call_pending (1008 workaround)"
                                 )
                         else:
+                            await asyncio.sleep(0)
                             await session.send_realtime_input(activity_start=msg.activity_start)
                     elif msg.activity_end:
                         if self._tool_call_pending:
@@ -984,6 +990,7 @@ class RealtimeSession(llm.RealtimeSession):
                                     "skipping realtime input (activity_end) due to tool_call_pending (1008 workaround)"
                                 )
                         else:
+                            await asyncio.sleep(0)
                             await session.send_realtime_input(activity_end=msg.activity_end)
                 else:
                     logger.warning(f"Warning: Received unhandled message type: {type(msg)}")

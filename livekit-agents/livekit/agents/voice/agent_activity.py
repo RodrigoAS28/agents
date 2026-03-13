@@ -565,6 +565,7 @@ class AgentActivity(RecognitionHooks):
             )
             self._rt_session.on("metrics_collected", self._on_metrics_collected)
             self._rt_session.on("error", self._on_error)
+            self._rt_session.on("session_reconnected", self._on_session_reconnected)
 
             remove_instructions(self._agent._chat_ctx)
 
@@ -737,6 +738,7 @@ class AgentActivity(RecognitionHooks):
             )
             self._rt_session.off("metrics_collected", self._on_metrics_collected)
             self._rt_session.off("error", self._on_error)
+            self._rt_session.off("session_reconnected", self._on_session_reconnected)
 
         if isinstance(self.stt, stt.STT):
             self.stt.off("metrics_collected", self._on_metrics_collected)
@@ -1178,6 +1180,17 @@ class AgentActivity(RecognitionHooks):
             self._session.emit("error", error_event)
 
         self._session._on_error(error)
+
+    def _on_session_reconnected(
+        self, _: llm.RealtimeSessionReconnectedEvent
+    ) -> None:
+        """Trigger a short recovery reply after realtime session reconnects (e.g. after 1008)."""
+        try:
+            self._generate_reply(
+                instructions="Say briefly that you had a brief connection hiccup and ask the user to continue or repeat what they said.",
+            )
+        except RuntimeError as e:
+            logger.warning("session_reconnected: could not generate recovery reply: %s", e)
 
     def _on_input_speech_started(self, _: llm.InputSpeechStartedEvent) -> None:
         if self.vad is None:
