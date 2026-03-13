@@ -91,8 +91,8 @@ def _get_1008_error_hint(error_message: str) -> str | None:
     """
     Generate a hint for WebSocket 1008 policy violation errors.
 
-    This provides a generic hint when the connection fails with a 1008 error,
-    which often indicates the model name doesn't match the API being used.
+    1008 can indicate model/API mismatch, or sending realtime input (audio/activity)
+    during a tool call (the client gates input during tool calls to avoid this).
 
     Args:
         error_message: The error message from the WebSocket exception
@@ -103,12 +103,13 @@ def _get_1008_error_hint(error_message: str) -> str | None:
     if "1008" not in error_message and "policy violation" not in error_message.lower():
         return None
 
-    return (
-        "\n\nHint: A 1008 policy violation error often indicates that the model name "
-        "doesn't match the API being used. VertexAI models typically start with "
-        "'gemini-live-', while Gemini API models start with 'gemini-2.' or similar. "
-        "Please verify your model name matches your API configuration."
+    hint = (
+        "\n\nHint: A 1008 policy violation can mean (1) the model name doesn't match "
+        "the API (VertexAI: 'gemini-live-*', Gemini API: 'gemini-2.*'), or "
+        "(2) realtime input was sent during a tool call. This client gates audio and "
+        "activity during tool calls to avoid (2)."
     )
+    return hint
 
 
 @dataclass
@@ -970,6 +971,10 @@ class RealtimeSession(llm.RealtimeSession):
                                     part["inline_data"] = "<audio>"
                         logger.debug("<<< received response", extra={"response": resp_copy})
 
+                    # Gate realtime input as soon as we see a tool_call to avoid 1008 (policy violation)
+                    if response.tool_call:
+                        self._tool_call_pending = True
+
                     if not self._current_generation or self._current_generation._done:
                         if (sc := response.server_content) and sc.interrupted:
                             # two cases an interrupted event is sent without an active generation
@@ -1022,6 +1027,7 @@ class RealtimeSession(llm.RealtimeSession):
                 logger.error(f"error in receive task: {e}", exc_info=e)
                 self._mark_restart_needed(on_error=True)
         finally:
+            self._tool_call_pending = False
             self._mark_current_generation_done()
 
     def _build_connect_config(self) -> types.LiveConnectConfig:
@@ -1251,7 +1257,6 @@ class RealtimeSession(llm.RealtimeSession):
             logger.warning("received tool call but no active generation.")
             return
 
-        self._tool_call_pending = True
         gen = self._current_generation
         for fnc_call in tool_call.function_calls or []:
             arguments = json.dumps(fnc_call.args)
