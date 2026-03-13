@@ -483,6 +483,9 @@ class RealtimeSession(llm.RealtimeSession):
         self._in_user_activity = False
         self._session_lock = asyncio.Lock()
         self._num_retries = 0
+        # Gate all realtime input while a tool call is pending to avoid Gemini 1008 errors.
+        # See: https://discuss.ai.google.dev/t/gemini-live-api-websocket-error-1008-operation-is-not-implemented-or-supported-or-enabled/114644/56
+        self._tool_call_pending = False
 
     async def _close_active_session(self) -> None:
         async with self._session_lock:
@@ -787,6 +790,7 @@ class RealtimeSession(llm.RealtimeSession):
             await self._close_active_session()
 
             self._session_should_close.clear()
+            self._tool_call_pending = False
             config = self._build_connect_config()
             session = None
             try:
@@ -904,8 +908,13 @@ class RealtimeSession(llm.RealtimeSession):
                         turn_complete=msg.turn_complete if msg.turn_complete is not None else True,
                     )
                 elif isinstance(msg, types.LiveClientToolResponse) and msg.function_responses:
-                    await session.send_tool_response(function_responses=msg.function_responses)
+                    try:
+                        await session.send_tool_response(function_responses=msg.function_responses)
+                    finally:
+                        self._tool_call_pending = False
                 elif isinstance(msg, types.LiveClientRealtimeInput):
+                    if self._tool_call_pending:
+                        continue
                     if msg.media_chunks:
                         for media_chunk in msg.media_chunks:
                             await session.send_realtime_input(media=media_chunk)
@@ -1242,6 +1251,7 @@ class RealtimeSession(llm.RealtimeSession):
             logger.warning("received tool call but no active generation.")
             return
 
+        self._tool_call_pending = True
         gen = self._current_generation
         for fnc_call in tool_call.function_calls or []:
             arguments = json.dumps(fnc_call.args)
@@ -1258,6 +1268,7 @@ class RealtimeSession(llm.RealtimeSession):
     def _handle_tool_call_cancellation(
         self, tool_call_cancellation: types.LiveServerToolCallCancellation
     ) -> None:
+        self._tool_call_pending = False
         logger.warning(
             "server cancelled tool calls",
             extra={"function_call_ids": tool_call_cancellation.ids},
