@@ -483,6 +483,7 @@ class RealtimeSession(llm.RealtimeSession):
         self._in_user_activity = False
         self._session_lock = asyncio.Lock()
         self._num_retries = 0
+        self._first_connection = True
 
     async def _close_active_session(self) -> None:
         async with self._session_lock:
@@ -825,6 +826,9 @@ class RealtimeSession(llm.RealtimeSession):
                                 turns=turns,  # type: ignore
                                 turn_complete=False,
                             )
+                    if not self._first_connection:
+                        self.emit("session_reconnected", llm.RealtimeSessionReconnectedEvent())
+                    self._first_connection = False
                     # queue up existing chat context
                     send_task = asyncio.create_task(
                         self._send_task(session), name="gemini-realtime-send"
