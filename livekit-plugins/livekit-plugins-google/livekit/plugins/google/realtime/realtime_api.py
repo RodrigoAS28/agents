@@ -509,6 +509,7 @@ class RealtimeSession(llm.RealtimeSession):
         # Gate all realtime input while a tool call is pending to avoid Gemini 1008 errors.
         # See: https://discuss.ai.google.dev/t/gemini-live-api-websocket-error-1008-operation-is-not-implemented-or-supported-or-enabled/114644/56
         self._tool_call_pending = False
+        self._tool_call_pending_logged = False
 
     async def _close_active_session(self) -> None:
         async with self._session_lock:
@@ -814,6 +815,7 @@ class RealtimeSession(llm.RealtimeSession):
 
             self._session_should_close.clear()
             self._tool_call_pending = False
+            self._tool_call_pending_logged = False
             config = self._build_connect_config()
             session = None
             try:
@@ -939,16 +941,48 @@ class RealtimeSession(llm.RealtimeSession):
                         await session.send_tool_response(function_responses=msg.function_responses)
                     finally:
                         self._tool_call_pending = False
+                        self._tool_call_pending_logged = False
                 elif isinstance(msg, types.LiveClientRealtimeInput):
-                    if self._tool_call_pending:
-                        continue
                     if msg.media_chunks:
                         for media_chunk in msg.media_chunks:
+                            if self._tool_call_pending:
+                                if not self._tool_call_pending_logged:
+                                    self._tool_call_pending_logged = True
+                                    logger.info(
+                                        "1008 workaround: gating realtime input (tool call in progress)"
+                                    )
+                                if lk_google_debug:
+                                    logger.debug(
+                                        "skipping realtime input (media) due to tool_call_pending (1008 workaround)"
+                                    )
+                                break
                             await session.send_realtime_input(media=media_chunk)
                     elif msg.activity_start:
-                        await session.send_realtime_input(activity_start=msg.activity_start)
+                        if self._tool_call_pending:
+                            if not self._tool_call_pending_logged:
+                                self._tool_call_pending_logged = True
+                                logger.info(
+                                    "1008 workaround: gating realtime input (tool call in progress)"
+                                )
+                            if lk_google_debug:
+                                logger.debug(
+                                    "skipping realtime input (activity_start) due to tool_call_pending (1008 workaround)"
+                                )
+                        else:
+                            await session.send_realtime_input(activity_start=msg.activity_start)
                     elif msg.activity_end:
-                        await session.send_realtime_input(activity_end=msg.activity_end)
+                        if self._tool_call_pending:
+                            if not self._tool_call_pending_logged:
+                                self._tool_call_pending_logged = True
+                                logger.info(
+                                    "1008 workaround: gating realtime input (tool call in progress)"
+                                )
+                            if lk_google_debug:
+                                logger.debug(
+                                    "skipping realtime input (activity_end) due to tool_call_pending (1008 workaround)"
+                                )
+                        else:
+                            await session.send_realtime_input(activity_end=msg.activity_end)
                 else:
                     logger.warning(f"Warning: Received unhandled message type: {type(msg)}")
 
@@ -1054,6 +1088,7 @@ class RealtimeSession(llm.RealtimeSession):
                 self._mark_restart_needed(on_error=True)
         finally:
             self._tool_call_pending = False
+            self._tool_call_pending_logged = False
             self._mark_current_generation_done()
 
     def _build_connect_config(self) -> types.LiveConnectConfig:
@@ -1300,6 +1335,7 @@ class RealtimeSession(llm.RealtimeSession):
         self, tool_call_cancellation: types.LiveServerToolCallCancellation
     ) -> None:
         self._tool_call_pending = False
+        self._tool_call_pending_logged = False
         logger.warning(
             "server cancelled tool calls",
             extra={"function_call_ids": tool_call_cancellation.ids},
