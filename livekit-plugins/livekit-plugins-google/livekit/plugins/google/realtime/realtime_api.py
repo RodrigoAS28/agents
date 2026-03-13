@@ -827,6 +827,7 @@ class RealtimeSession(llm.RealtimeSession):
                                 turn_complete=False,
                             )
                     if not self._first_connection:
+                        logger.info("Gemini Realtime session reconnected, emitting session_reconnected")
                         self.emit("session_reconnected", llm.RealtimeSessionReconnectedEvent())
                     self._first_connection = False
                     # queue up existing chat context
@@ -885,9 +886,11 @@ class RealtimeSession(llm.RealtimeSession):
 
                     retry_interval = self._opts.conn_options._interval_for_retry(self._num_retries)
                     logger.warning(
-                        f"Gemini Realtime API connection failed, retrying in {retry_interval}s",
+                        "Gemini Realtime API connection failed, retrying in %ss (retry %s/%s)",
+                        retry_interval,
+                        self._num_retries + 1,
+                        max_retries,
                         exc_info=e,
-                        extra={"attempt": self._num_retries, "max_retries": max_retries},
                     )
                     await asyncio.sleep(retry_interval)
                     self._num_retries += 1
