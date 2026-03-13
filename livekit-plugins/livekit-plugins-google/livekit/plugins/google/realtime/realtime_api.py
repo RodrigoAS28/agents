@@ -112,6 +112,28 @@ def _get_1008_error_hint(error_message: str) -> str | None:
     return hint
 
 
+def _get_1011_error_hint(error_message: str) -> str | None:
+    """
+    Generate a hint for WebSocket 1011 internal error (server-side).
+
+    1011 is raised by the Gemini Live server and is not fixable by the client.
+    It often occurs during or after tool execution. The client will retry the connection.
+
+    See: https://discuss.ai.google.dev/t/random-websocket-close-1011-internal-server-error/107237
+    See: https://discuss.ai.google.dev/t/gemini-live-api-issues-1008-1011-disconnects-per-session-cost-function-calling-api-logs/116509
+
+    Returns:
+        A helpful hint string, or None if not a 1011 error
+    """
+    if "1011" not in error_message and "internal error" not in error_message.lower():
+        return None
+
+    return (
+        "\n\nHint: 1011 is a server-side internal error from Gemini Live (not a client bug). "
+        "It can occur during/after tool use or intermittently. This client will retry the connection."
+    )
+
+
 @dataclass
 class InputTranscription:
     item_id: str
@@ -860,8 +882,8 @@ class RealtimeSession(llm.RealtimeSession):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                # Provide a hint for 1008 errors (often model/API mismatch for unknown models)
-                hint = _get_1008_error_hint(str(e))
+                # Provide hints for 1008 (policy) and 1011 (server internal error)
+                hint = _get_1008_error_hint(str(e)) or _get_1011_error_hint(str(e))
                 if hint:
                     logger.error(f"Gemini Realtime API error: {e}{hint}", exc_info=e)
                 else:
@@ -883,6 +905,10 @@ class RealtimeSession(llm.RealtimeSession):
                         if hint:
                             error_msg += hint
                         raise APIConnectionError(message=error_msg) from e
+
+                    # 1011 is server-side; treat as recoverable so the agent can show reconnecting
+                    if "1011" in str(e):
+                        self._emit_error(e, recoverable=True)
 
                     retry_interval = self._opts.conn_options._interval_for_retry(self._num_retries)
                     logger.warning(
