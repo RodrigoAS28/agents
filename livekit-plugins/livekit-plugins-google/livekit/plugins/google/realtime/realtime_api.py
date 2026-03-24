@@ -516,6 +516,7 @@ class RealtimeSession(llm.RealtimeSession):
                     self._active_session = None
 
     def _mark_restart_needed(self, on_error: bool = False) -> None:
+        logger.info("session restart needed", extra={"on_error": on_error})
         if not self._session_should_close.is_set():
             self._session_should_close.set()
             # reset the msg_ch, do not send messages from previous session
@@ -576,7 +577,15 @@ class RealtimeSession(llm.RealtimeSession):
                     return
 
             # Active session exists — send mid-session system instruction update (no reconnect needed)
-            logger.debug("Updating instructions mid-session")
+            logger.info(
+                "sending instructions mid-session via LiveClientContent (may interrupt current generation)",
+                extra={
+                    "has_active_generation": (
+                        self._current_generation is not None
+                        and not self._current_generation._done
+                    ) if self._current_generation else False,
+                },
+            )
             self._send_client_event(
                 types.LiveClientContent(
                     turns=[
@@ -638,8 +647,20 @@ class RealtimeSession(llm.RealtimeSession):
                 tool_response_scheduling=self._opts.tool_response_scheduling,
             )
             if turns:
+                logger.info(
+                    "update_chat_ctx sending turns",
+                    extra={
+                        "num_turns": len(turns),
+                        "has_tool_results": bool(tool_results),
+                        "turn_roles": [t.role for t in turns] if turns else [],
+                    },
+                )
                 self._send_client_event(types.LiveClientContent(turns=turns, turn_complete=False))
             if tool_results:
+                logger.info(
+                    "update_chat_ctx sending tool results",
+                    extra={"scheduling": str(self._opts.tool_response_scheduling)},
+                )
                 self._send_client_event(tool_results)
 
         # since we don't have a view of the history on the server side, we'll assume
@@ -1004,6 +1025,15 @@ class RealtimeSession(llm.RealtimeSession):
                                 and not self._current_generation._done
                             )
                             if not self._pending_generation_fut and not is_tool_call_transition:
+                                logger.info(
+                                    "server interrupted done/tool-call generation",
+                                    extra={
+                                        "gen_id": self._current_generation.response_id if self._current_generation else None,
+                                        "gen_done": self._current_generation._done if self._current_generation else None,
+                                        "gen_tool_calls_sent": self._current_generation._tool_calls_sent if self._current_generation else None,
+                                        "is_tool_call_transition": is_tool_call_transition,
+                                    },
+                                )
                                 self._handle_input_speech_started()
 
                             sc.interrupted = None
@@ -1114,6 +1144,16 @@ class RealtimeSession(llm.RealtimeSession):
             self._mark_current_generation_done()
 
         response_id = utils.shortuuid("GR_")
+        logger.info(
+            "new generation starting",
+            extra={
+                "new_gen_id": response_id,
+                "prev_gen_id": self._current_generation.response_id if self._current_generation else None,
+                "prev_done": self._current_generation._done if self._current_generation else None,
+                "prev_had_tool_calls": prev_had_tool_calls,
+                "has_pending_generation_fut": self._pending_generation_fut is not None,
+            },
+        )
         self._current_generation = _ResponseGeneration(
             message_ch=utils.aio.Chan[llm.MessageGeneration](),
             function_ch=utils.aio.Chan[llm.FunctionCall](),
@@ -1151,6 +1191,10 @@ class RealtimeSession(llm.RealtimeSession):
             self._pending_generation_fut.set_result(generation_event)
             self._pending_generation_fut = None
         elif not prev_had_tool_calls:
+            logger.info(
+                "emitting input_speech_started from new generation (prev had no tool calls)",
+                extra={"gen_id": self._current_generation.response_id},
+            )
             self._handle_input_speech_started()
 
         self.emit("generation_created", generation_event)
@@ -1209,8 +1253,23 @@ class RealtimeSession(llm.RealtimeSession):
 
         if server_content.generation_complete or server_content.turn_complete:
             current_gen._completed_timestamp = time.time()
+            logger.info(
+                "server content completion signal",
+                extra={
+                    "gen_id": current_gen.response_id,
+                    "turn_complete": bool(server_content.turn_complete),
+                    "generation_complete": bool(server_content.generation_complete),
+                },
+            )
 
         if server_content.interrupted and not self._pending_generation_fut:
+            logger.info(
+                "server reported user interruption (VAD) during active generation",
+                extra={
+                    "gen_id": current_gen.response_id,
+                    "has_pending_generation_fut": self._pending_generation_fut is not None,
+                },
+            )
             # interrupt agent if there is no pending user initiated generation
             self._handle_input_speech_started()
 
@@ -1287,6 +1346,13 @@ class RealtimeSession(llm.RealtimeSession):
             return
 
         gen = self._current_generation
+        logger.info(
+            "tool calls received from model",
+            extra={
+                "gen_id": gen.response_id,
+                "tool_names": [fc.name for fc in (tool_call.function_calls or [])],
+            },
+        )
         for fnc_call in tool_call.function_calls or []:
             arguments = json.dumps(fnc_call.args)
 

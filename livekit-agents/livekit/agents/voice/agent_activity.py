@@ -1012,6 +1012,15 @@ class AgentActivity(RecognitionHooks):
             An asyncio.Future that completes when the interruption is fully processed
             and chat context has been updated
         """
+        logger.info(
+            "interrupt() called",
+            extra={
+                "current_speech_id": self._current_speech.id if self._current_speech else None,
+                "current_speech_interrupted": self._current_speech.interrupted if self._current_speech else None,
+                "speech_queue_len": len(self._speech_q),
+                "force": force,
+            },
+        )
         self._cancel_preemptive_generation()
 
         future = asyncio.Future[None]()
@@ -1194,6 +1203,12 @@ class AgentActivity(RecognitionHooks):
         self._session._on_error(error)
 
     def _on_input_speech_started(self, _: llm.InputSpeechStartedEvent) -> None:
+        logger.info(
+            "input_speech_started -> interrupt()",
+            extra={
+                "current_speech_id": self._current_speech.id if self._current_speech else None,
+            },
+        )
         if self.vad is None:
             self._session._update_user_state("speaking")
 
@@ -1228,6 +1243,14 @@ class AgentActivity(RecognitionHooks):
             self._session._conversation_item_added(msg)
 
     def _on_generation_created(self, ev: llm.GenerationCreatedEvent) -> None:
+        logger.info(
+            "model-initiated generation creating speech task",
+            extra={
+                "response_id": ev.response_id,
+                "user_initiated": ev.user_initiated,
+                "scheduling_paused": self._scheduling_paused,
+            },
+        )
         if ev.user_initiated:
             # user_initiated generations are directly handled inside _realtime_reply_task
             return
@@ -2785,6 +2808,15 @@ class AgentActivity(RecognitionHooks):
                 draining = True
 
             if len(new_fnc_outputs) > 0:
+                logger.info(
+                    "sending tool results to realtime model",
+                    extra={
+                        "tool_names": [out.name for out in new_fnc_outputs],
+                        "num_results": len(new_fnc_outputs),
+                        "auto_tool_reply": self.llm.capabilities.auto_tool_reply_generation,
+                        "reply_required": fnc_executed_ev._reply_required,
+                    },
+                )
                 # wait all speeches played before updating the tool output and generating the response
                 # most realtime models don't support generating multiple responses at the same time
                 while self._current_speech or self._speech_q:
