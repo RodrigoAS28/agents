@@ -44,6 +44,12 @@ DEFAULT_IMAGE_ENCODE_OPTIONS = images.EncodeOptions(
 
 lk_google_debug = int(os.getenv("LK_GOOGLE_DEBUG", 0))
 
+# google-genai renamed Behavior.BLOCK -> Behavior.BLOCKING
+try:
+    _GEMINI_TOOL_BEHAVIOR_BLOCKING: types.Behavior = types.Behavior.BLOCKING
+except AttributeError:
+    _GEMINI_TOOL_BEHAVIOR_BLOCKING = types.Behavior.BLOCK  # type: ignore[attr-defined]
+
 # Known VertexAI models for the Live API
 # See: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api
 KNOWN_VERTEXAI_MODELS: frozenset[str] = frozenset(
@@ -292,7 +298,7 @@ class RealtimeModel(llm.RealtimeModel):
             proactivity (bool, optional): Whether to enable proactive audio. Defaults to False.
             realtime_input_config (RealtimeInputConfig, optional): The configuration for realtime input. Defaults to None.
             context_window_compression (ContextWindowCompressionConfig, optional): The configuration for context window compression. Defaults to None.
-            tool_behavior (Behavior, optional): The behavior for tool call. Default behavior is BLOCK in Gemini Realtime API.
+            tool_behavior (Behavior, optional): The behavior for tool call. Default behavior is BLOCKING in Gemini Realtime API.
             tool_response_scheduling (FunctionResponseScheduling, optional): The scheduling for tool response. Default scheduling is WHEN_IDLE.
             session_resumption (SessionResumptionConfig, optional): The configuration for session resumption. Defaults to None.
             thinking_config (ThinkingConfig, optional): Native audio thinking configuration.
@@ -733,12 +739,15 @@ class RealtimeSession(llm.RealtimeSession):
 
     def _effective_tool_behavior(self) -> NotGivenOr[types.Behavior]:
         if self._is_gemini_31_live():
-            if is_given(self._opts.tool_behavior) and self._opts.tool_behavior != types.Behavior.BLOCK:
+            if (
+                is_given(self._opts.tool_behavior)
+                and self._opts.tool_behavior != _GEMINI_TOOL_BEHAVIOR_BLOCKING
+            ):
                 logger.warning(
                     f"tool_behavior={self._opts.tool_behavior} is not supported by model "
-                    f"'{self._opts.model}'. Forcing BLOCK."
+                    f"'{self._opts.model}'. Forcing {_GEMINI_TOOL_BEHAVIOR_BLOCKING.name}."
                 )
-            return types.Behavior.BLOCK
+            return _GEMINI_TOOL_BEHAVIOR_BLOCKING
         return self._opts.tool_behavior
 
     def _effective_tool_response_scheduling(
