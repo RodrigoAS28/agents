@@ -56,10 +56,50 @@ KNOWN_VERTEXAI_MODELS: frozenset[str] = frozenset(
 # See: https://ai.google.dev/gemini-api/docs/models#gemini-2.5-flash-live
 KNOWN_GEMINI_API_MODELS: frozenset[str] = frozenset(
     {
+        "gemini-3.1-flash-live-preview",
         "gemini-2.5-flash-native-audio-preview-12-2025",
         "gemini-2.5-flash-native-audio-preview-09-2025",
     }
 )
+
+
+def _is_gemini_31_live_model(model: str) -> bool:
+    return model.startswith("gemini-3.1-flash-live")
+
+
+def _normalize_realtime_thinking_config(
+    model: str, thinking_config: NotGivenOr[types.ThinkingConfig | dict[str, object]]
+) -> types.ThinkingConfig | dict[str, object] | None:
+    if not is_given(thinking_config):
+        return None
+
+    if not _is_gemini_31_live_model(model):
+        return thinking_config
+
+    # Gemini 3.1 Live uses thinking_level instead of thinking_budget.
+    level: str | None = None
+    budget: int | None = None
+    if isinstance(thinking_config, dict):
+        level_value = thinking_config.get("thinking_level")
+        if isinstance(level_value, str):
+            level = level_value
+        budget_value = thinking_config.get("thinking_budget")
+        if isinstance(budget_value, int):
+            budget = budget_value
+    else:
+        level_value = getattr(thinking_config, "thinking_level", None)
+        if isinstance(level_value, str):
+            level = level_value
+        budget = thinking_config.thinking_budget
+
+    if budget is not None and level is None:
+        logger.warning(
+            f"Model {model} does not support thinking_budget. "
+            "Using thinking_level='minimal' for lowest latency."
+        )
+    if level is None:
+        level = "minimal"
+    return {"thinking_level": level}
 
 
 def _validate_model_api_match(model: str, use_vertexai: bool) -> None:
@@ -147,7 +187,7 @@ class _RealtimeOptions:
     api_version: NotGivenOr[str] = NOT_GIVEN
     tool_behavior: NotGivenOr[types.Behavior] = NOT_GIVEN
     tool_response_scheduling: NotGivenOr[types.FunctionResponseScheduling] = NOT_GIVEN
-    thinking_config: NotGivenOr[types.ThinkingConfig] = NOT_GIVEN
+    thinking_config: NotGivenOr[types.ThinkingConfig | dict[str, object]] = NOT_GIVEN
     session_resumption: NotGivenOr[types.SessionResumptionConfig] = NOT_GIVEN
     credentials: google.auth.credentials.Credentials | None = None
 
@@ -216,7 +256,7 @@ class RealtimeModel(llm.RealtimeModel):
         api_version: NotGivenOr[str] = NOT_GIVEN,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
         http_options: NotGivenOr[types.HttpOptions] = NOT_GIVEN,
-        thinking_config: NotGivenOr[types.ThinkingConfig] = NOT_GIVEN,
+        thinking_config: NotGivenOr[types.ThinkingConfig | dict[str, object]] = NOT_GIVEN,
         credentials: google.auth.credentials.Credentials | None = None,
     ) -> None:
         """
@@ -548,6 +588,11 @@ class RealtimeSession(llm.RealtimeSession):
         if not is_given(self._opts.instructions) or self._opts.instructions != instructions:
             self._opts.instructions = instructions
 
+            if self._should_use_realtime_input_for_text():
+                # Gemini 3.1 Live applies updated instructions via reconnect.
+                self._mark_restart_needed()
+                return
+
             async with self._session_lock:
                 if not self._active_session:
                     # No active session yet — restart will pick up new instructions via _build_connect_config
@@ -614,7 +659,7 @@ class RealtimeSession(llm.RealtimeSession):
             tool_results = get_tool_results_for_realtime(
                 append_ctx,
                 vertexai=self._opts.vertexai,
-                tool_response_scheduling=self._opts.tool_response_scheduling,
+                tool_response_scheduling=self._effective_tool_response_scheduling(),
             )
             if turns:
                 self._send_client_event(types.LiveClientContent(turns=turns, turn_complete=False))
@@ -678,6 +723,44 @@ class RealtimeSession(llm.RealtimeSession):
     def _send_client_event(self, event: ClientEvents) -> None:
         with contextlib.suppress(utils.aio.channel.ChanClosed):
             self._msg_ch.send_nowait(event)
+
+    def _should_use_realtime_input_for_text(self) -> bool:
+        # Gemini 3.1 Live only supports send_client_content for initial history seeding.
+        return not self._opts.vertexai and _is_gemini_31_live_model(str(self._opts.model))
+
+    def _is_gemini_31_live(self) -> bool:
+        return self._should_use_realtime_input_for_text()
+
+    def _effective_tool_behavior(self) -> NotGivenOr[types.Behavior]:
+        if self._is_gemini_31_live():
+            if is_given(self._opts.tool_behavior) and self._opts.tool_behavior != types.Behavior.BLOCK:
+                logger.warning(
+                    f"tool_behavior={self._opts.tool_behavior} is not supported by model "
+                    f"'{self._opts.model}'. Forcing BLOCK."
+                )
+            return types.Behavior.BLOCK
+        return self._opts.tool_behavior
+
+    def _effective_tool_response_scheduling(
+        self,
+    ) -> NotGivenOr[types.FunctionResponseScheduling]:
+        if self._is_gemini_31_live():
+            if is_given(self._opts.tool_response_scheduling):
+                logger.warning(
+                    f"tool_response_scheduling is not supported by model '{self._opts.model}' "
+                    "and will be ignored."
+                )
+            return NOT_GIVEN
+        return self._opts.tool_response_scheduling
+
+    @staticmethod
+    def _extract_text_from_turns(turns: list[types.Content] | None) -> list[str]:
+        text_parts: list[str] = []
+        for turn in turns or []:
+            for part in turn.parts or []:
+                if part.text:
+                    text_parts.append(part.text)
+        return text_parts
 
     def generate_reply(
         self, *, instructions: NotGivenOr[str] = NOT_GIVEN
@@ -897,10 +980,17 @@ class RealtimeSession(llm.RealtimeSession):
                     ):
                         break
                 if isinstance(msg, types.LiveClientContent):
-                    await session.send_client_content(
-                        turns=msg.turns,  # type: ignore
-                        turn_complete=msg.turn_complete if msg.turn_complete is not None else True,
-                    )
+                    if self._should_use_realtime_input_for_text():
+                        text_parts = self._extract_text_from_turns(msg.turns)
+                        if not text_parts and msg.turn_complete:
+                            text_parts = ["."]
+                        for text in text_parts:
+                            await session.send_realtime_input(text=text)
+                    else:
+                        await session.send_client_content(
+                            turns=msg.turns,  # type: ignore
+                            turn_complete=msg.turn_complete if msg.turn_complete is not None else True,
+                        )
                 elif isinstance(msg, types.LiveClientToolResponse) and msg.function_responses:
                     await session.send_tool_response(function_responses=msg.function_responses)
                 elif isinstance(msg, types.LiveClientRealtimeInput):
@@ -1020,8 +1110,13 @@ class RealtimeSession(llm.RealtimeSession):
 
     def _build_connect_config(self) -> types.LiveConnectConfig:
         temp = self._opts.temperature if is_given(self._opts.temperature) else None
+        thinking_config = _normalize_realtime_thinking_config(
+            str(self._opts.model), self._opts.thinking_config
+        )
 
-        tools_config = create_tools_config(self._tools, tool_behavior=self._opts.tool_behavior)
+        tools_config = create_tools_config(
+            self._tools, tool_behavior=self._effective_tool_behavior()
+        )
         conf = types.LiveConnectConfig(
             response_modalities=self._opts.response_modalities,
             generation_config=types.GenerationConfig(
@@ -1038,9 +1133,7 @@ class RealtimeSession(llm.RealtimeSession):
                 frequency_penalty=self._opts.frequency_penalty
                 if is_given(self._opts.frequency_penalty)
                 else None,
-                thinking_config=self._opts.thinking_config
-                if is_given(self._opts.thinking_config)
-                else None,
+                thinking_config=thinking_config,  # type: ignore[arg-type]
             ),
             system_instruction=types.Content(parts=[types.Part(text=self._opts.instructions)])
             if is_given(self._opts.instructions)
@@ -1060,9 +1153,19 @@ class RealtimeSession(llm.RealtimeSession):
         )
 
         if is_given(self._opts.proactivity):
-            conf.proactivity = types.ProactivityConfig(proactive_audio=self._opts.proactivity)
+            if self._should_use_realtime_input_for_text():
+                logger.warning(
+                    f"proactivity is not supported by model '{self._opts.model}' and will be ignored."
+                )
+            else:
+                conf.proactivity = types.ProactivityConfig(proactive_audio=self._opts.proactivity)
         if is_given(self._opts.enable_affective_dialog):
-            conf.enable_affective_dialog = self._opts.enable_affective_dialog
+            if self._should_use_realtime_input_for_text():
+                logger.warning(
+                    f"enable_affective_dialog is not supported by model '{self._opts.model}' and will be ignored."
+                )
+            else:
+                conf.enable_affective_dialog = self._opts.enable_affective_dialog
         if is_given(self._opts.realtime_input_config):
             conf.realtime_input_config = self._opts.realtime_input_config
         if is_given(self._opts.context_window_compression):
